@@ -10,12 +10,23 @@ import { ApolloProvider } from "react-apollo";
 import EventList from "./EventList";
 import LatestEvents from "./LatestEvents";
 
+import Auth from "@aws-amplify/auth";
+import useAmplifyAuth from "./useAmplifyAuth";
+
+Auth.configure(awsconfig);
+
+const getAccessToken = (): Promise<string> => {
+  return Auth.currentSession().then(session => {
+    return session.getAccessToken().getJwtToken();
+  });
+};
+
 const config = {
   url: awsconfig.aws_appsync_graphqlEndpoint,
   region: awsconfig.aws_appsync_region,
   auth: {
     type: awsconfig.aws_appsync_authenticationType,
-    apiKey: awsconfig.aws_appsync_apiKey
+    jwtToken: getAccessToken
   },
   disableOffline: true
 };
@@ -32,12 +43,24 @@ export const client = new ApolloClient({
   cache: new InMemoryCache({ addTypename: false })
 });
 
-const App = () => (
-  <div className="App">
-    <EventList />
-    <LatestEvents />
-  </div>
-);
+const App = () => {
+  const {
+    state: { user },
+    handleSignout
+  } = useAmplifyAuth();
+
+  return !user ? (
+    <div>
+      <button onClick={() => Auth.federatedSignIn()}>Open Hosted UI</button>
+    </div>
+  ) : (
+    <div className="App">
+      <button onClick={handleSignout}>Sign Out</button>
+      <EventList />
+      <LatestEvents />
+    </div>
+  );
+};
 
 const WithProvider = () => (
   <ApolloProvider client={client}>
