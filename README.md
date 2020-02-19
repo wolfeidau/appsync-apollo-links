@@ -6,14 +6,33 @@ This example is built on [Create React App](https://create-react-app.dev).
 
 # Configuration
 
-You MUST create a new `src/aws-exports.ts` file containing the settings, in this example is the API_KEY setup.
+You MUST create a new `src/aws-exports.ts` file containing the settings, in this example is the cognito pool setup.
 
 ```ts
+
 export default {
-    aws_appsync_graphqlEndpoint: "https://XXXX.appsync-api.ap-southeast-2.amazonaws.com/graphql",
-    aws_appsync_region: "ap-southeast-2",
-    aws_appsync_authenticationType: "API_KEY",
-    aws_appsync_apiKey: "XXX-XXXXXXXXXXXXXXXXXXXXXXX"
+  aws_user_pools_id: "XX-XXXX-X_abcd1234",
+  aws_cognito_identity_pool_id:
+    "XX-XXXX-X:XXXXXXXX-XXXX-1234-abcd-1234567890ab",
+  aws_user_pools_web_client_id: "a1b2c3d4e5f6g7h8i9j0k1l2m3",
+  aws_cognito_region: "XX-XXXX-X",
+  aws_mandatory_sign_in: true,
+  oauth: {
+    domain: "YOUR_DOMAIN_NAME.auth.XX-XXXX-X.amazoncognito.com",
+    scope: [
+      "phone",
+      "email",
+      "profile",
+      "openid",
+      "aws.cognito.signin.user.admin"
+    ],
+    redirectSignIn: "https://localhost:3000/auth/callback",
+    redirectSignOut: "https://localhost:3000/auth/logout",
+    responseType: "code" // or 'token', note that REFRESH token will only be generated when the responseType is code
+  },
+  aws_appsync_graphqlEndpoint: "https://XXXX.appsync-api.XX-XXXX-X.amazonaws.com/graphql",
+  aws_appsync_region: "XX-XXXX-X",
+  aws_appsync_authenticationType: "AMAZON_COGNITO_USER_POOLS"
 }
 ```
 

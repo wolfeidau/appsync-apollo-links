@@ -1,0 +1,243 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: 'authentication: Resources for hosting authentication using AWS Cognito, a @wolfeidau template'
+
+Parameters:
+
+  AppName:
+    Description: Name of application, used in sign up emails and naming of aws resources.
+    Type: String
+    AllowedPattern: '^[a-zA-Z0-9]*$'
+
+  Stage:
+    Description: Stage to be added to the pool name.
+    Type: String
+    Default: dev
+
+  WhitelistDomain:
+    Description: Accept cognito signups from this domain, and reject all others.
+    Type: String
+
+Resources:
+  CognitoUserPool:
+    Type: "AWS::Cognito::UserPool"
+    Properties:
+      UserPoolName: !Sub ${AppName}_UserPool_${Stage}
+      LambdaConfig:
+        PreSignUp: !GetAtt PreSignupLambdaFunction.Arn
+      UsernameAttributes:
+        - email
+      AutoVerifiedAttributes:
+        - email
+      Schema:
+        - Name: name
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        - Name: email
+          AttributeDataType: String
+          Mutable: true
+          Required: true
+        # customers can select a unique alias for their tenancy after signup
+        - Name: company_alias
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+          DeveloperOnlyAttribute: true
+        - Name: company_name
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+        # This should be assigned by a hook which triggers a step function during registration
+        - Name: company_id
+          AttributeDataType: String
+          Mutable: true
+          Required: false
+          DeveloperOnlyAttribute: true
+      EmailVerificationSubject: !Sub "Welcome to ${AppName}"
+      EmailVerificationMessage: !Sub "${AppName} says: Your activation code is {####}"
+
+  CognitoUserSPAClient:
+    Type: "AWS::Cognito::UserPoolClient"
+    Properties:
+        ClientName: !Sub ${AppName}UserSPAClient${Stage}
+        GenerateSecret: False
+        RefreshTokenValidity: 7
+        UserPoolId: !Ref CognitoUserPool
+        SupportedIdentityProviders:
+          - COGNITO
+        DefaultRedirectURI: https://localhost:3000/auth/callback
+        CallbackURLs:
+          - https://localhost:3000/auth/callback
+        LogoutURLs:
+          - https://localhost:3000/auth/logout
+        AllowedOAuthFlows:
+          - code
+        AllowedOAuthFlowsUserPoolClient: True
+        AllowedOAuthScopes:
+          - email
+          - profile
+          - openid
+
+  CognitoIdentityPool:
+    Type: "AWS::Cognito::IdentityPool"
+    Properties:
+      IdentityPoolName: !Sub ${AppName}IdentityPool${Stage}
+      AllowUnauthenticatedIdentities: True
+      CognitoIdentityProviders:
+        - ClientId: !Ref CognitoUserSPAClient
+          ProviderName: !GetAtt CognitoUserPool.ProviderName
+
+  CognitoUnauthRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub Cognito_${CognitoIdentityPool.Name}_Unauth_Role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action: [ 'sts:AssumeRoleWithWebIdentity' ]
+            Condition:
+              StringEquals:
+                cognito-identity.amazonaws.com:aud: !Ref CognitoIdentityPool
+              ForAnyValue:StringLike:
+                cognito-identity.amazonaws.com:amr: unauthenticated
+      Policies:
+        - PolicyName: CognitoUnauthorizedPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                - mobileanalytics:PutEvents
+                - cognito-sync:*
+                Resource:
+                - "*"
+
+  CognitoAuthRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      RoleName: !Sub Cognito_${CognitoIdentityPool.Name}_Auth_Role
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: cognito-identity.amazonaws.com
+            Action: [ 'sts:AssumeRoleWithWebIdentity' ]
+            Condition:
+              StringEquals:
+                cognito-identity.amazonaws.com:aud: !Ref CognitoIdentityPool
+              ForAnyValue:StringLike:
+                cognito-identity.amazonaws.com:amr: authenticated
+      Policies:
+        - PolicyName: CognitoAuthorizedPolicy
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                - mobileanalytics:PutEvents
+                - cognito-sync:*
+                Resource:
+                - "*"
+
+  IdentityPoolRoleAttachment:
+    Type: "AWS::Cognito::IdentityPoolRoleAttachment"
+    Properties:
+      IdentityPoolId: !Ref CognitoIdentityPool
+      Roles:
+        authenticated: !GetAtt CognitoAuthRole.Arn
+        unauthenticated: !GetAtt CognitoUnauthRole.Arn
+
+  PreSignupLambdaRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: "2012-10-17"
+        Statement:
+          - Effect: "Allow"
+            Principal:
+              Service:
+                - "lambda.amazonaws.com"
+            Action:
+              - sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+        - arn:aws:iam::aws:policy/AWSXrayWriteOnlyAccess
+
+  PreSignupLambdaFunction:
+    Type: "AWS::Lambda::Function"
+    Properties:
+      Handler: "index.handler"
+      Role:
+        Fn::GetAtt: PreSignupLambdaRole.Arn
+      Code:
+        ZipFile: |
+            exports.handler = (event, context, callback) => {
+              // Set the user pool autoConfirmUser flag after validating the email domain
+              event.response.autoConfirmUser = false;
+              // Split the email address so we can compare domains
+              const address = event.request.userAttributes.email.split("@")
+              // This tells Amazon Cognito to permit signup
+              if (address[1] === process.env.WHITELIST_DOMAIN) {
+                return callback(null, event);
+              }
+              // Return error to Amazon Cognito
+              callback("invalid email domain");
+            };
+      Runtime: "nodejs10.x"
+      Timeout: 30
+      Environment:
+        Variables:
+          WHITELIST_DOMAIN: !Ref WhitelistDomain
+
+  CognitoPreSignupLambaPermission:
+    Type: "AWS::Lambda::Permission"
+    Properties:
+      Action: "lambda:InvokeFunction"
+      FunctionName: !Ref PreSignupLambdaFunction
+      Principal: "cognito-idp.amazonaws.com"
+      SourceArn: !Sub "arn:aws:cognito-idp:${AWS::Region}:${AWS::AccountId}:userpool/${CognitoUserPool}"
+
+  CognitoDomain:
+    Type: AWS::Cognito::UserPoolDomain
+    Properties:
+      Domain: !Sub ${AppName}-${Stage}
+      UserPoolId: !Ref CognitoUserPool
+
+  CognitoUserPoolParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: !Sub "/config/${Stage}/${AppName}/user_pool"
+      Type: "String"
+      Value: !Ref CognitoUserPool
+
+  CognitoUserSPAClientIdParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: !Sub "/config/${Stage}/${AppName}/spa_client"
+      Type: "String"
+      Value: !Ref CognitoUserSPAClient
+
+  CognitoUserPoolDomainParameter:
+    Type: "AWS::SSM::Parameter"
+    Properties:
+      Name: !Sub "/config/${Stage}/${AppName}/domain_name"
+      Type: "String"
+      Value: !Sub "${CognitoDomain}.auth.${AWS::Region}.amazoncognito.com"
+
+Outputs:
+  CognitoUserPool:
+    Description: "User pool ID"
+    Value: !Ref CognitoUserPool
+  CognitoIdentityPool:
+    Description: "Identity pool ID"
+    Value: !Ref CognitoIdentityPool
+  CognitoUserSPAClientId:
+    Description: "Client ID for the SPA client"
+    Value: !Ref CognitoUserSPAClient
+  CognitoUserPoolDomain:
+    Description: "Domain for the SPA client"
+    Value: !Sub "${CognitoDomain}.auth.${AWS::Region}.amazoncognito.com"
